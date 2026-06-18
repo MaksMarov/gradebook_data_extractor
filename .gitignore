@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+apps/web/frontend/node_modules/
+apps/web/frontend/dist/
+
+# Runtime data
+data/*
+!data/.gitkeep
+out/
+outputs/
+test_output/
+
+# Models and generated binaries
+models/*
+!models/.gitkeep
+*.pt
+*.onnx
+*.engine
+
+# Local config
+.env
+.env.*
+!.env.example
+
+# Archives and OS files
+*.zip
+.DS_Store

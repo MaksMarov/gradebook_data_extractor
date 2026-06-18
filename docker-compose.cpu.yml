@@ -1,0 +1,3 @@
+# CPU fallback. Use only when there is no NVIDIA GPU on the host:
+#   DEPLOY_PROFILE=cpu bash scripts/deploy.sh
+services: {}
