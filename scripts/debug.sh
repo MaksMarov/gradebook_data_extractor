@@ -1,5 +1,3 @@
-cd /путь/к/gradebook_data_extractor
-
 OUT="debug_yolo_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUT"
 
