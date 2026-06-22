@@ -35,6 +35,11 @@ ALLOWED_IMAGE_EXTENSIONS = {
     if item.strip()
 }
 
+PIPELINE_DEVICE = os.getenv("PIPELINE_DEVICE", "auto").strip().lower()
+PIPELINE_REQUIRE_GPU = os.getenv("PIPELINE_REQUIRE_GPU", "0").strip().lower() in {"1", "true", "yes", "on"}
+YOLO_DEVICE = os.getenv("YOLO_DEVICE", "auto").strip()
+EASYOCR_GPU = os.getenv("EASYOCR_GPU", "auto").strip()
+
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Gradebook Extractor API", version="0.4.0")
@@ -92,6 +97,14 @@ def health_ready() -> dict[str, Any]:
 def health_ollama() -> dict[str, Any]:
     payload = check_ollama()
     if payload["status"] not in {"ok", "skipped"}:
+        raise HTTPException(status_code=503, detail=payload)
+    return payload
+
+
+@app.get("/api/health/gpu")
+def health_gpu() -> dict[str, Any]:
+    payload = check_backend_gpu()
+    if payload["status"] == "error":
         raise HTTPException(status_code=503, detail=payload)
     return payload
 
@@ -322,11 +335,13 @@ def build_health(*, check_dependencies: bool) -> dict[str, Any]:
     yolo_status = check_yolo_model()
     jobs_dir_status = check_jobs_dir()
     ollama_status = check_ollama() if check_dependencies else {"status": "not_checked"}
+    backend_gpu_status = check_backend_gpu() if check_dependencies else {"status": "not_checked"}
 
     dependencies = {
         "jobs_dir": jobs_dir_status,
         "yolo_model": yolo_status,
         "ollama": ollama_status,
+        "backend_gpu": backend_gpu_status,
     }
 
     dependency_values = [value["status"] for value in dependencies.values()]
@@ -344,6 +359,10 @@ def build_health(*, check_dependencies: bool) -> dict[str, Any]:
         "model_base_url": os.getenv("MODEL_BASE_URL", "http://localhost:11434"),
         "yolo_model_path": os.getenv("YOLO_MODEL_PATH", "models/yolo26n.pt"),
         "pipeline_concurrency": PIPELINE_CONCURRENCY,
+        "pipeline_device": PIPELINE_DEVICE,
+        "pipeline_require_gpu": PIPELINE_REQUIRE_GPU,
+        "yolo_device": YOLO_DEVICE,
+        "easyocr_gpu": EASYOCR_GPU,
         "upload_limits": {
             "max_files": MAX_UPLOAD_FILES,
             "max_size_mb": MAX_UPLOAD_SIZE_MB,
@@ -376,6 +395,46 @@ def check_yolo_model() -> dict[str, Any]:
     if yolo_path.exists():
         return {"status": "ok", "path": str(yolo_path)}
     return {"status": "error", "path": str(yolo_path), "message": "YOLO model file not found"}
+
+
+def check_backend_gpu() -> dict[str, Any]:
+    if PROCESSOR_MODE == "mock":
+        return {"status": "skipped", "reason": "mock processor mode"}
+
+    requires_gpu = PIPELINE_REQUIRE_GPU or is_gpu_requested(PIPELINE_DEVICE, YOLO_DEVICE, EASYOCR_GPU)
+    try:
+        from data_extractor.runtime import torch_cuda_info
+    except Exception as exc:  # pragma: no cover - environment-specific
+        payload = {
+            "status": "error" if requires_gpu else "skipped",
+            "required": requires_gpu,
+            "message": f"Cannot import data_extractor runtime: {type(exc).__name__}: {exc}",
+        }
+        return payload
+
+    info = torch_cuda_info().to_dict()
+    cuda_available = bool(info.get("cuda_available"))
+    payload = {
+        "status": "ok" if cuda_available else ("error" if requires_gpu else "skipped"),
+        "required": requires_gpu,
+        "pipeline_device": PIPELINE_DEVICE,
+        "yolo_device": YOLO_DEVICE,
+        "easyocr_gpu": EASYOCR_GPU,
+        **info,
+    }
+    if not cuda_available:
+        payload["message"] = "CUDA is not available inside backend container"
+    return payload
+
+
+def is_gpu_requested(*values: object) -> bool:
+    for value in values:
+        normalized = str(value or "").strip().lower()
+        if normalized in {"1", "true", "yes", "on", "gpu", "cuda", "cuda:0", "0"}:
+            return True
+        if normalized.startswith("cuda"):
+            return True
+    return False
 
 
 def check_ollama() -> dict[str, Any]:
@@ -522,6 +581,9 @@ def run_pipeline_sync(job: dict[str, Any]) -> dict[str, Any]:
         model_name=os.getenv("MODEL_NAME", "qwen2.5vl:3b"),
         ocr_mode=os.getenv("OCR_MODE", "qwen"),
         mock_ocr_text=os.getenv("MOCK_OCR_TEXT", "№ 22-ЭТФ-062"),
+        compute_device=os.getenv("PIPELINE_DEVICE", "auto"),
+        yolo_device=None if os.getenv("YOLO_DEVICE", "auto").strip().lower() in {"", "auto", "default"} else os.getenv("YOLO_DEVICE"),
+        easyocr_gpu=os.getenv("EASYOCR_GPU", "auto"),
     )
 
     stdout_buffer = io.StringIO()

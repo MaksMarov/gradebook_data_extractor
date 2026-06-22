@@ -38,9 +38,15 @@ class PipelineConfig:
     qwen_num_predict: int = 80
     qwen_max_image_width: int = 1200
 
+    # auto - use CUDA when torch can see it, otherwise CPU
+    # cpu  - force CPU for YOLO/EasyOCR helper stages
+    # cuda - force GPU and fail fast if CUDA is not available
+    compute_device: str = "auto"
+    yolo_device: str | None = None
+    easyocr_gpu: bool | str = "auto"
+
     yolo_conf_threshold: float = 0.4
     yolo_target_label: str = "person"
-    easyocr_gpu: bool = False
 
     anchor_expand_ratio: float = 3.0
     image_max_side: int | None = None

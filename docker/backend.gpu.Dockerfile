@@ -5,6 +5,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 ENV PIP_NO_CACHE_DIR=0
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
 
 WORKDIR /app
 
@@ -16,16 +20,21 @@ RUN apt-get update \
         libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
+# Heavy dependencies are installed before project sources are copied.
+# This keeps Docker layers reusable when only application code changes.
 COPY requirements-backend.txt ./requirements-backend.txt
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install --index-url "${TORCH_INDEX_URL}" torch torchvision \
     && python -m pip install -r requirements-backend.txt
 
 COPY packages ./packages
 COPY apps ./apps
 COPY pyproject.toml* ./
 
+# Project code is installed without dependency resolution because dependencies
+# are already cached in the previous layer.
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --no-deps -e packages/data_extractor
 

@@ -20,6 +20,7 @@ from data_extractor.stages.image_loader import ImageLoader
 from data_extractor.stages.number_parser import StudentNumberParser
 from data_extractor.stages.qwen_ocr import DisabledOcrReader, QwenOcrReader
 from data_extractor.testing.fake_ocr import FakeOcrReader
+from data_extractor.runtime import resolve_easyocr_gpu, resolve_yolo_device, torch_cuda_info
 from data_extractor.utils.timing import timed
 
 
@@ -247,6 +248,10 @@ class DocumentPipeline:
             "ocr_mode": self.config.ocr_mode,
             "allowed_faculties": list(self.config.allowed_faculties),
             "allowed_years": list(self.config.allowed_years),
+            "compute_device": self.config.compute_device,
+            "yolo_device": resolve_yolo_device(self.config.compute_device, self.config.yolo_device),
+            "easyocr_gpu": resolve_easyocr_gpu(self.config.compute_device, self.config.easyocr_gpu),
+            "torch_cuda": torch_cuda_info().to_dict(),
             "anchor_expand_ratio": self.config.anchor_expand_ratio,
             "image_max_side": self.config.image_max_side,
         }
@@ -276,6 +281,9 @@ class StudDocPipeline:
         qwen_max_image_width: int = 1200,
         anchor_expand_ratio: float = 3.0,
         ocr_mode: str = "qwen",
+        compute_device: str = "auto",
+        yolo_device: str | None = None,
+        easyocr_gpu: bool | str = "auto",
     ):
         config = PipelineConfig(
             yolo_model_path=yolo_model_path,
@@ -289,6 +297,9 @@ class StudDocPipeline:
             qwen_max_image_width=qwen_max_image_width,
             anchor_expand_ratio=anchor_expand_ratio,
             ocr_mode=ocr_mode,  # type: ignore[arg-type]
+            compute_device=compute_device,
+            yolo_device=yolo_device,
+            easyocr_gpu=easyocr_gpu,
         )
         self._pipeline = DocumentPipeline(config)
 

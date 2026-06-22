@@ -1,3 +1,113 @@
-# CPU fallback. Use only when there is no NVIDIA GPU on the host:
-#   DEPLOY_PROFILE=cpu bash scripts/deploy.sh
-services: {}
+services:
+  ollama:
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
+    container_name: gradebook-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    expose:
+      - "11434"
+    networks:
+      - gradebook_network
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  ollama-init:
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
+    container_name: gradebook-ollama-init
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODEL_NAME: ${MODEL_NAME:-qwen2.5vl:3b}
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "set -eu;
+       echo \"Checking Ollama model: $$MODEL_NAME\";
+       if ollama list | awk 'NR > 1 {print $$1}' | grep -Fxq \"$$MODEL_NAME\"; then
+         echo \"Ollama model already exists: $$MODEL_NAME\";
+       else
+         echo \"Pulling Ollama model: $$MODEL_NAME\";
+         ollama pull \"$$MODEL_NAME\";
+       fi"
+    networks:
+      - gradebook_network
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    container_name: gradebook-backend
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
+    environment:
+      WEB_PROCESSOR_MODE: ${WEB_PROCESSOR_MODE:-pipeline}
+      WEB_PIPELINE_DEBUG: ${WEB_PIPELINE_DEBUG:-1}
+      WEB_PIPELINE_CONCURRENCY: ${WEB_PIPELINE_CONCURRENCY:-1}
+      WEB_JOBS_DIR: ${WEB_JOBS_DIR:-data/web_jobs}
+      WEB_MAX_UPLOAD_FILES: ${WEB_MAX_UPLOAD_FILES:-50}
+      WEB_MAX_UPLOAD_SIZE_MB: ${WEB_MAX_UPLOAD_SIZE_MB:-25}
+      WEB_ALLOWED_IMAGE_EXTENSIONS: ${WEB_ALLOWED_IMAGE_EXTENSIONS:-jpg,jpeg,png,webp,bmp}
+      PIPELINE_DEVICE: cpu
+      PIPELINE_REQUIRE_GPU: "0"
+      YOLO_DEVICE: cpu
+      EASYOCR_GPU: "0"
+      YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-models/yolo26n.pt}
+      OCR_MODE: ${OCR_MODE:-qwen}
+      MODEL_NAME: ${MODEL_NAME:-qwen2.5vl:3b}
+      MODEL_BASE_URL: ${MODEL_BASE_URL:-http://ollama:11434}
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models:ro
+      - easyocr_data:/root/.EasyOCR
+    networks:
+      - gradebook_network
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/health/ready >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 30
+      start_period: 45s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    container_name: gradebook-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - gradebook_network
+    ports:
+      - "${FRONTEND_PORT:-18765}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/api/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  ollama_data:
+    name: ${OLLAMA_VOLUME:-gradebook_ollama_data}
+  easyocr_data:
+    name: ${EASYOCR_VOLUME:-gradebook_easyocr_data}
+
+networks:
+  gradebook_network:
+    name: ${GRADEBOOK_NETWORK:-gradebook_network}
+    driver: bridge

@@ -10,7 +10,10 @@ apps/web/frontend/node_modules
 apps/web/frontend/dist
 dist
 out
-data/web_jobs
+data/*
+!data/.gitkeep
+models/*
+!models/.gitkeep
 logs
 .DS_Store
 .env

@@ -1,115 +1,135 @@
-# Gradebook Extractor
+# Gradebook Data Extractor
 
-Веб-сервис для обработки фотографий зачётных книжек. Пользователь загружает изображения, сервис находит лицо, выделяет область номера, распознаёт номер зачётной книжки и отдаёт результат: распознанные лица с именами по номерам, CSV и ZIP.
+Web-сервис для распознавания номера зачётной книжки на изображениях. Сервис обрабатывает фото, выделяет лицо, находит область номера, распознаёт номер и позволяет скачать результат в виде переименованных изображений и CSV.
 
 ## Быстрый запуск на GPU-машине
 
+Один раз подготовить хост:
+
 ```bash
-git clone <repo-url>
+git clone https://github.com/MaksMarov/gradebook_data_extractor
 cd gradebook_data_extractor
 cp .env.example .env
 ```
 
-Положите YOLO-модель отдельно от репозитория:
+Положить YOLO-модель:
 
 ```text
 models/yolo26n.pt
 ```
 
-На чистой Ubuntu/Debian-машине с NVIDIA GPU:
+Установить NVIDIA Container Toolkit, если он ещё не установлен:
 
 ```bash
 sudo bash scripts/install_host_gpu.sh
-bash scripts/deploy.sh
 ```
 
-Открыть интерфейс:
+Проверить окружение:
+
+```bash
+bash scripts/preflight.sh
+```
+
+Запустить приложение:
+
+```bash
+docker compose up -d --build
+```
+
+Открыть:
 
 ```text
 http://localhost:18765
 ```
 
-Порт можно поменять в `.env`:
+Проверить сервисы:
 
-```env
-FRONTEND_PORT=18765
+```bash
+bash scripts/healthcheck.sh
 ```
 
-## Что запускается
+## Повторные запуски
+
+Обычный запуск без пересборки:
+
+```bash
+docker compose up -d
+```
+
+После обновления кода:
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+Остановка без удаления моделей:
+
+```bash
+docker compose down
+```
+
+Не использовать без необходимости:
+
+```bash
+docker compose down -v
+```
+
+`-v` удалит Docker volumes, включая скачанную Ollama-модель и кэш EasyOCR.
+
+## Как устроен запуск
+
+`docker-compose.yml` является основным GPU production compose. Он поднимает:
 
 ```text
-frontend  nginx + React
-backend   FastAPI + data_extractor
-ollama    Ollama + qwen2.5vl:3b
+ollama       локальная OCR/VLM-модель, наружу не открывается
+ollama-init  скачивает MODEL_NAME только если модели ещё нет
+backend      FastAPI + data_extractor + GPU для YOLO/EasyOCR
+frontend     nginx + React, наружу открыт только FRONTEND_PORT
 ```
 
-Все сервисы находятся в Docker-сети `gradebook_network`. Наружу публикуется только frontend. Backend и Ollama доступны только внутри Docker-сети. Backend обращается к Ollama по адресу:
+Ollama доступен только внутри Docker-сети:
 
 ```text
 http://ollama:11434
 ```
 
-## Модели
-
-Модели не хранятся в репозитории.
-
-```text
-models/yolo26n.pt     файл YOLO, кладётся вручную перед запуском
-qwen2.5vl:3b          скачивается через ollama pull внутрь Docker volume
-```
-
-Скрипты для asset bundle убраны. Модель YOLO лучше хранить отдельно: в приватной репе, zip-архиве, Google Drive или на сервере артефактов. Перед деплоем файл должен оказаться по пути `models/yolo26n.pt`, либо путь надо указать через `YOLO_MODEL_PATH` в `.env`.
-
-## Проверка
-
-```bash
-bash scripts/healthcheck.sh
-bash scripts/docker_smoke.sh
-```
-
-Проверяется:
-
-```text
-Ollama внутри Docker-сети
-наличие qwen2.5vl:3b
-backend live endpoint
-backend ready endpoint
-frontend
-frontend -> backend API proxy
-```
+Backend ждёт завершения `ollama-init`, поэтому отдельный `deploy.sh` больше не нужен.
 
 ## CPU fallback
 
-Основной сценарий — GPU. CPU-режим оставлен только для отладки:
+CPU-режим оставлен только как аварийный вариант:
 
 ```bash
-DEPLOY_PROFILE=cpu bash scripts/deploy.sh
+docker compose -f docker-compose.cpu.yml up -d --build
 ```
 
-## Очистка старых обработок
-
-По умолчанию удаляются jobs старше 14 дней:
-
-```bash
-bash scripts/cleanup_jobs.sh
-```
-
-Посмотреть, что будет удалено:
-
-```bash
-bash scripts/cleanup_jobs.sh --dry-run --days 14
-```
+Для нормальной работы с Qwen рекомендуется GPU.
 
 ## Полезные команды
 
-```bash
-bash scripts/preflight.sh
-bash scripts/deploy.sh
-bash scripts/healthcheck.sh
-bash scripts/docker_smoke.sh
-bash scripts/cleanup_jobs.sh --dry-run
+Логи:
 
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml ps
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs -f backend
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs -f ollama
+```bash
+docker compose logs -f backend
+docker compose logs -f ollama
+docker compose logs -f frontend
+```
+
+Список моделей Ollama:
+
+```bash
+docker compose exec -T ollama ollama list
+```
+
+Проверка CUDA внутри backend:
+
+```bash
+docker compose exec -T backend python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'no cuda')"
+```
+
+Очистка старых обработок:
+
+```bash
+bash scripts/cleanup_jobs.sh
 ```
