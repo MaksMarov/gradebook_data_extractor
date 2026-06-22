@@ -1,11 +1,12 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .venv/
 venv/
-env/
-.pytest_cache/
-*.egg-info/
 
 # Node
 node_modules/
@@ -14,24 +15,23 @@ apps/web/frontend/node_modules/
 apps/web/frontend/dist/
 
 # Runtime data
-data/*
-!data/.gitkeep
+data/web_jobs/
 out/
-outputs/
-test_output/
+logs/
 
-# Models and generated binaries
-models/*
-!models/.gitkeep
+# Models and asset bundles
+models/*.pt
 *.pt
 *.onnx
-*.engine
+*.zip
+!models/.gitkeep
 
 # Local config
 .env
 .env.*
 !.env.example
 
-# Archives and OS files
-*.zip
+# OS / IDE
 .DS_Store
+.idea/
+.vscode/

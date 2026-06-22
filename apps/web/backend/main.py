@@ -26,10 +26,18 @@ JOBS_DIR = Path(os.getenv("WEB_JOBS_DIR", "data/web_jobs"))
 PROCESSOR_MODE = os.getenv("WEB_PROCESSOR_MODE", "pipeline").strip().lower()
 PIPELINE_DEBUG = os.getenv("WEB_PIPELINE_DEBUG", "1").strip().lower() not in {"0", "false", "no", "off"}
 PIPELINE_CONCURRENCY = max(1, int(os.getenv("WEB_PIPELINE_CONCURRENCY", "1")))
+MAX_UPLOAD_FILES = max(1, int(os.getenv("WEB_MAX_UPLOAD_FILES", "50")))
+MAX_UPLOAD_SIZE_MB = max(1, int(os.getenv("WEB_MAX_UPLOAD_SIZE_MB", "25")))
+MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
+ALLOWED_IMAGE_EXTENSIONS = {
+    ("jpg" if item.strip().lower().lstrip(".") == "jpeg" else item.strip().lower().lstrip("."))
+    for item in os.getenv("WEB_ALLOWED_IMAGE_EXTENSIONS", "jpg,jpeg,png,webp,bmp").split(",")
+    if item.strip()
+}
 
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="Gradebook Extractor API", version="0.3.0")
+app = FastAPI(title="Gradebook Extractor API", version="0.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -91,20 +99,40 @@ def health_ollama() -> dict[str, Any]:
 @app.post("/api/jobs")
 async def create_jobs(files: list[UploadFile] = File(...)) -> dict[str, Any]:
     if not files:
-        raise HTTPException(status_code=400, detail="No files uploaded")
+        raise HTTPException(status_code=400, detail="Не загружено ни одного файла")
+    if len(files) > MAX_UPLOAD_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Слишком много файлов за один раз: максимум {MAX_UPLOAD_FILES}",
+        )
+
+    prepared_uploads: list[dict[str, Any]] = []
+    for upload in files:
+        original_name = upload.filename or "image.jpg"
+        extension = get_upload_extension(original_name)
+        content = await upload.read()
+        validate_upload(original_name, extension, upload.content_type, content)
+        prepared_uploads.append(
+            {
+                "original_name": original_name,
+                "extension": extension,
+                "content": content,
+            }
+        )
 
     created: list[dict[str, Any]] = []
 
     async with _store_lock:
-        for upload in files:
-            original_name = upload.filename or "image.jpg"
-            extension = get_extension(original_name)
+        for prepared in prepared_uploads:
+            original_name = prepared["original_name"]
+            extension = prepared["extension"]
+            content = prepared["content"]
+
             job_id = uuid.uuid4().hex
             job_dir = JOBS_DIR / job_id
             job_dir.mkdir(parents=True, exist_ok=True)
 
             input_path = job_dir / f"input.{extension}"
-            content = await upload.read()
             input_path.write_bytes(content)
 
             now = now_iso()
@@ -142,7 +170,6 @@ async def create_jobs(files: list[UploadFile] = File(...)) -> dict[str, Any]:
         schedule_processing(job["id"])
 
     return {"jobs": created}
-
 
 @app.get("/api/jobs")
 def list_jobs() -> dict[str, Any]:
@@ -293,9 +320,11 @@ def download_successful_zip() -> StreamingResponse:
 
 def build_health(*, check_dependencies: bool) -> dict[str, Any]:
     yolo_status = check_yolo_model()
+    jobs_dir_status = check_jobs_dir()
     ollama_status = check_ollama() if check_dependencies else {"status": "not_checked"}
 
     dependencies = {
+        "jobs_dir": jobs_dir_status,
         "yolo_model": yolo_status,
         "ollama": ollama_status,
     }
@@ -315,9 +344,29 @@ def build_health(*, check_dependencies: bool) -> dict[str, Any]:
         "model_base_url": os.getenv("MODEL_BASE_URL", "http://localhost:11434"),
         "yolo_model_path": os.getenv("YOLO_MODEL_PATH", "models/yolo26n.pt"),
         "pipeline_concurrency": PIPELINE_CONCURRENCY,
+        "upload_limits": {
+            "max_files": MAX_UPLOAD_FILES,
+            "max_size_mb": MAX_UPLOAD_SIZE_MB,
+            "allowed_extensions": sorted(ALLOWED_IMAGE_EXTENSIONS),
+        },
         "dependencies": dependencies,
         "time": now_iso(),
     }
+
+
+def check_jobs_dir() -> dict[str, Any]:
+    try:
+        JOBS_DIR.mkdir(parents=True, exist_ok=True)
+        probe = JOBS_DIR / ".healthcheck"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return {"status": "ok", "path": str(JOBS_DIR)}
+    except Exception as exc:
+        return {
+            "status": "error",
+            "path": str(JOBS_DIR),
+            "message": f"Jobs directory is not writable: {type(exc).__name__}: {exc}",
+        }
 
 
 def check_yolo_model() -> dict[str, Any]:
@@ -752,9 +801,58 @@ def save_job(job: dict[str, Any]) -> None:
     (job_dir / "job.json").write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def get_upload_extension(filename: str) -> str:
+    suffix = Path(filename).suffix.lower().lstrip(".")
+    return "jpg" if suffix == "jpeg" else suffix
+
+
+def validate_upload(filename: str, extension: str, content_type: str | None, content: bytes) -> None:
+    if extension not in ALLOWED_IMAGE_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_IMAGE_EXTENSIONS))
+        raise HTTPException(
+            status_code=415,
+            detail=f"Недопустимый формат файла '{filename}'. Разрешены: {allowed}",
+        )
+
+    if not content:
+        raise HTTPException(status_code=400, detail=f"Файл '{filename}' пустой")
+
+    if len(content) > MAX_UPLOAD_SIZE_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Файл '{filename}' слишком большой. Максимум: {MAX_UPLOAD_SIZE_MB} МБ",
+        )
+
+    normalized_content_type = (content_type or "").lower().strip()
+    if normalized_content_type and normalized_content_type != "application/octet-stream" and not normalized_content_type.startswith("image/"):
+        raise HTTPException(
+            status_code=415,
+            detail=f"Файл '{filename}' не похож на изображение: {normalized_content_type}",
+        )
+
+    if not looks_like_image(extension, content):
+        raise HTTPException(
+            status_code=415,
+            detail=f"Файл '{filename}' не удалось определить как изображение",
+        )
+
+
+def looks_like_image(extension: str, content: bytes) -> bool:
+    head = content[:32]
+    if extension == "jpg":
+        return head.startswith(b"\xff\xd8\xff")
+    if extension == "png":
+        return head.startswith(b"\x89PNG\r\n\x1a\n")
+    if extension == "webp":
+        return len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+    if extension == "bmp":
+        return head.startswith(b"BM")
+    return False
+
+
 def get_extension(filename: str) -> str:
     suffix = Path(filename).suffix.lower().lstrip(".")
-    if suffix in {"jpg", "jpeg", "png", "webp", "bmp", "gif", "svg"}:
+    if suffix in {"jpg", "jpeg", "png", "webp", "bmp", "gif", "svg", "json"}:
         return "jpg" if suffix == "jpeg" else suffix
     return "jpg"
 

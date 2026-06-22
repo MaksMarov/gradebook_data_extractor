@@ -1,43 +1,38 @@
 # Gradebook Extractor
 
-Веб-сервис для обработки фотографий зачётных книжек: загружает изображения, распознаёт номер, сохраняет результат и позволяет скачать распознанные лица с именами по номерам зачётных книжек.
+Веб-сервис для обработки фотографий зачётных книжек. Пользователь загружает изображения, сервис находит лицо, выделяет область номера, распознаёт номер зачётной книжки и отдаёт результат: распознанные лица с именами по номерам, CSV и ZIP.
 
-## Быстрый запуск на целевой машине с GPU
+## Быстрый запуск на GPU-машине
 
 ```bash
 git clone <repo-url>
-cd GradebookDataExtractor
+cd gradebook_data_extractor
 cp .env.example .env
 ```
 
-Положите YOLO-модель в:
+Положите YOLO-модель отдельно от репозитория:
 
 ```text
 models/yolo26n.pt
 ```
 
-Либо укажите в `.env` ссылку на zip-архив с моделью:
-
-```env
-ASSET_BUNDLE_URL=https://example.com/gradebook-assets.zip
-```
-
-На чистой Ubuntu/Debian-машине с NVIDIA GPU сначала выполните:
+На чистой Ubuntu/Debian-машине с NVIDIA GPU:
 
 ```bash
 sudo bash scripts/install_host_gpu.sh
-```
-
-После установки Docker/NVIDIA runtime:
-
-```bash
 bash scripts/deploy.sh
 ```
 
 Открыть интерфейс:
 
 ```text
-http://localhost:8080
+http://localhost:18765
+```
+
+Порт можно поменять в `.env`:
+
+```env
+FRONTEND_PORT=18765
 ```
 
 ## Что запускается
@@ -45,70 +40,76 @@ http://localhost:8080
 ```text
 frontend  nginx + React
 backend   FastAPI + data_extractor
-ollama    Ollama container с моделью qwen2.5vl:3b
+ollama    Ollama + qwen2.5vl:3b
 ```
 
-Ollama наружу не публикуется. Backend обращается к нему внутри Docker-сети по адресу:
+Все сервисы находятся в Docker-сети `gradebook_network`. Наружу публикуется только frontend. Backend и Ollama доступны только внутри Docker-сети. Backend обращается к Ollama по адресу:
 
 ```text
 http://ollama:11434
 ```
 
-## Проверка сервисов
+## Модели
+
+Модели не хранятся в репозитории.
+
+```text
+models/yolo26n.pt     файл YOLO, кладётся вручную перед запуском
+qwen2.5vl:3b          скачивается через ollama pull внутрь Docker volume
+```
+
+Скрипты для asset bundle убраны. Модель YOLO лучше хранить отдельно: в приватной репе, zip-архиве, Google Drive или на сервере артефактов. Перед деплоем файл должен оказаться по пути `models/yolo26n.pt`, либо путь надо указать через `YOLO_MODEL_PATH` в `.env`.
+
+## Проверка
 
 ```bash
 bash scripts/healthcheck.sh
+bash scripts/docker_smoke.sh
 ```
 
 Проверяется:
 
 ```text
 Ollama внутри Docker-сети
+наличие qwen2.5vl:3b
 backend live endpoint
-backend readiness endpoint
+backend ready endpoint
 frontend
+frontend -> backend API proxy
 ```
 
 ## CPU fallback
 
-Если GPU временно недоступен:
+Основной сценарий — GPU. CPU-режим оставлен только для отладки:
 
 ```bash
 DEPLOY_PROFILE=cpu bash scripts/deploy.sh
 ```
 
-CPU-режим нужен только как аварийный/отладочный вариант. Основной сценарий — GPU.
+## Очистка старых обработок
 
-## Модели
-
-В репозиторий модели не кладутся.
-
-```text
-models/yolo26n.pt     локальный файл или zip-архив из внешнего хранилища
-qwen2.5vl:3b          скачивается командой ollama pull внутрь Docker volume
-```
-
-`deploy.sh` сам запустит Ollama и выполнит:
+По умолчанию удаляются jobs старше 14 дней:
 
 ```bash
-ollama pull qwen2.5vl:3b
+bash scripts/cleanup_jobs.sh
 ```
 
-## Подготовка asset bundle
-
-Чтобы вынести YOLO-модель во внешний архив:
+Посмотреть, что будет удалено:
 
 ```bash
-bash scripts/make_assets_bundle.sh gradebook-assets.zip
+bash scripts/cleanup_jobs.sh --dry-run --days 14
 ```
-
-Загрузите `gradebook-assets.zip` в отдельное хранилище и укажите прямую ссылку в `.env` через `ASSET_BUNDLE_URL`.
 
 ## Полезные команды
 
 ```bash
+bash scripts/preflight.sh
 bash scripts/deploy.sh
 bash scripts/healthcheck.sh
+bash scripts/docker_smoke.sh
+bash scripts/cleanup_jobs.sh --dry-run
+
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml ps
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs -f backend
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml logs -f ollama
 ```

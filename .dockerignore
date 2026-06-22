@@ -1,7 +1,6 @@
 .git
 .venv
 venv
-env
 __pycache__
 *.pyc
 .pytest_cache
@@ -11,8 +10,8 @@ apps/web/frontend/node_modules
 apps/web/frontend/dist
 dist
 out
-outputs
-data
+data/web_jobs
+logs
 .DS_Store
 .env
 *.zip

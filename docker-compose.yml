@@ -30,6 +30,9 @@ services:
       WEB_PIPELINE_DEBUG: ${WEB_PIPELINE_DEBUG:-1}
       WEB_PIPELINE_CONCURRENCY: ${WEB_PIPELINE_CONCURRENCY:-1}
       WEB_JOBS_DIR: ${WEB_JOBS_DIR:-data/web_jobs}
+      WEB_MAX_UPLOAD_FILES: ${WEB_MAX_UPLOAD_FILES:-50}
+      WEB_MAX_UPLOAD_SIZE_MB: ${WEB_MAX_UPLOAD_SIZE_MB:-25}
+      WEB_ALLOWED_IMAGE_EXTENSIONS: ${WEB_ALLOWED_IMAGE_EXTENSIONS:-jpg,jpeg,png,webp,bmp}
       YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-models/yolo26n.pt}
       OCR_MODE: ${OCR_MODE:-qwen}
       MODEL_NAME: ${MODEL_NAME:-qwen2.5vl:3b}
@@ -39,8 +42,8 @@ services:
       - ./models:/app/models:ro
     networks:
       - gradebook_network
-    ports:
-      - "${BACKEND_PORT:-8000}:8000"
+    expose:
+      - "8000"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/health/ready >/dev/null || exit 1"]
       interval: 15s
@@ -60,9 +63,9 @@ services:
     networks:
       - gradebook_network
     ports:
-      - "${FRONTEND_PORT:-8080}:80"
+      - "${FRONTEND_PORT:-18765}:80"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q --spider http://localhost/ || exit 1"]
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/api/health/live || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 10

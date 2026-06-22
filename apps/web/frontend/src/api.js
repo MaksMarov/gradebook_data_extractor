@@ -7,7 +7,14 @@ async function request(path, options = {}) {
     let detail = "";
     try {
       const payload = await response.json();
-      detail = payload.detail || payload.error || JSON.stringify(payload);
+      const rawDetail = payload.detail || payload.error || payload;
+      if (typeof rawDetail === "string") {
+        detail = rawDetail;
+      } else if (rawDetail?.message) {
+        detail = rawDetail.message;
+      } else {
+        detail = JSON.stringify(rawDetail);
+      }
     } catch {
       detail = await response.text();
     }
