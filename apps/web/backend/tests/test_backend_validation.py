@@ -39,3 +39,26 @@ def test_unique_archive_name_for_duplicates() -> None:
     used: set[str] = set()
     assert main.unique_archive_name("22-ЭТФ-076.jpg", used) == "22-ЭТФ-076.jpg"
     assert main.unique_archive_name("22-ЭТФ-076.jpg", used) == "22-ЭТФ-076_2.jpg"
+
+
+def test_sha256_bytes_is_stable() -> None:
+    content = b"same image bytes"
+    assert main.sha256_bytes(content) == main.sha256_bytes(content)
+    assert main.sha256_bytes(content) != main.sha256_bytes(b"other image bytes")
+
+
+def test_find_duplicate_job_by_sha256(monkeypatch: pytest.MonkeyPatch) -> None:
+    file_hash = main.sha256_bytes(b"duplicate")
+    monkeypatch.setattr(main, "_jobs", {"job-1": {"id": "job-1", "file_sha256": file_hash}})
+    assert main.find_duplicate_job(file_hash)["id"] == "job-1"
+    assert main.find_duplicate_job(main.sha256_bytes(b"new")) is None
+
+
+def test_apply_progress_payload_keeps_progress_monotonic() -> None:
+    job = {"progress": 50, "stage": "ocr", "stage_text": "Распознавание", "message": "Распознавание"}
+    main.apply_progress_payload(job, {"progress": 40, "stage": "older", "stage_text": "Старый этап", "message": "Старый этап"})
+    assert job["progress"] == 50
+    assert job["stage"] == "older"
+    main.apply_progress_payload(job, {"progress": 88, "stage": "number_parse", "stage_text": "Проверка номера", "message": "Проверка номера"})
+    assert job["progress"] == 88
+    assert job["stage"] == "number_parse"

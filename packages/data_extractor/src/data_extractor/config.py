@@ -48,7 +48,9 @@ class PipelineConfig:
     yolo_conf_threshold: float = 0.4
     yolo_target_label: str = "person"
 
-    anchor_expand_ratio: float = 3.0
+    # Enlarged crop around the detected anchor text.
+    # 3.6 keeps more context below the "Зачетная книжка" title for OCR.
+    anchor_expand_ratio: float = 3.6
     image_max_side: int | None = None
     save_debug: bool = True
 

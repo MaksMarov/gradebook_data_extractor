@@ -175,6 +175,12 @@ h2 {
   color: var(--error);
 }
 
+.notice--info {
+  border-color: #cfe0ff;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
 .instruction {
   margin-bottom: 18px;
   border: 1px solid var(--line);

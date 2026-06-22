@@ -42,8 +42,12 @@ function normalizeJob(raw) {
     statusText: raw.status_text || raw.statusText || statusText(raw.status),
     number: raw.student_number || raw.number || raw.recognized_number || null,
     message: raw.user_message || raw.message || raw.error_message || raw.error_code || "",
+    stage: raw.stage || "unknown",
+    stageText: raw.stage_text || raw.stageText || raw.message || statusText(raw.status),
     progress: typeof raw.progress === "number" ? raw.progress : progressByStatus(raw.status),
     elapsedSec: raw.elapsed_sec || raw.elapsedSec || 0,
+    duplicate: Boolean(raw.duplicate),
+    duplicateOf: raw.duplicate_of || raw.duplicateOf || null,
     artifacts
   };
 }
@@ -82,7 +86,11 @@ export async function createJobs(files) {
     body: form
   });
 
-  return normalizeJobs(payload);
+  return {
+    jobs: normalizeJobs(payload),
+    duplicates: normalizeJobs(payload.duplicates || []),
+    skippedDuplicates: Number(payload.skipped_duplicates || 0)
+  };
 }
 
 export async function getJobs() {

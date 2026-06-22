@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import csv
+import hashlib
 import io
 import json
 import os
@@ -39,6 +40,8 @@ PIPELINE_DEVICE = os.getenv("PIPELINE_DEVICE", "auto").strip().lower()
 PIPELINE_REQUIRE_GPU = os.getenv("PIPELINE_REQUIRE_GPU", "0").strip().lower() in {"1", "true", "yes", "on"}
 YOLO_DEVICE = os.getenv("YOLO_DEVICE", "auto").strip()
 EASYOCR_GPU = os.getenv("EASYOCR_GPU", "auto").strip()
+ANCHOR_EXPAND_RATIO = float(os.getenv("ANCHOR_EXPAND_RATIO", "3.6"))
+PROGRESS_POLL_INTERVAL_SEC = float(os.getenv("WEB_PROGRESS_POLL_INTERVAL_SEC", "0.5"))
 
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -130,16 +133,28 @@ async def create_jobs(files: list[UploadFile] = File(...)) -> dict[str, Any]:
                 "original_name": original_name,
                 "extension": extension,
                 "content": content,
+                "file_sha256": sha256_bytes(content),
             }
         )
 
     created: list[dict[str, Any]] = []
+    duplicates: list[dict[str, Any]] = []
 
     async with _store_lock:
         for prepared in prepared_uploads:
             original_name = prepared["original_name"]
             extension = prepared["extension"]
             content = prepared["content"]
+            file_sha256 = prepared["file_sha256"]
+
+            duplicate = find_duplicate_job(file_sha256)
+            if duplicate is not None:
+                duplicate_public = public_job(duplicate)
+                duplicate_public["duplicate"] = True
+                duplicate_public["duplicate_of"] = duplicate["id"]
+                duplicate_public["message"] = f"Файл уже был добавлен: {duplicate.get('filename') or 'без имени'}"
+                duplicates.append(duplicate_public)
+                continue
 
             job_id = uuid.uuid4().hex
             job_dir = JOBS_DIR / job_id
@@ -155,6 +170,7 @@ async def create_jobs(files: list[UploadFile] = File(...)) -> dict[str, Any]:
                 "safe_filename": safe_name(original_name),
                 "size_bytes": len(content),
                 "extension": extension,
+                "file_sha256": file_sha256,
                 "input_path": str(input_path),
                 "download_path": str(input_path),
                 "result_path": None,
@@ -162,6 +178,8 @@ async def create_jobs(files: list[UploadFile] = File(...)) -> dict[str, Any]:
                 "status_text": "Ожидает",
                 "student_number": None,
                 "progress": 0,
+                "stage": "queued",
+                "stage_text": "Ожидает обработки",
                 "message": "Файл принят в обработку",
                 "created_at": now,
                 "finished_at": None,
@@ -182,7 +200,7 @@ async def create_jobs(files: list[UploadFile] = File(...)) -> dict[str, Any]:
     for job in created:
         schedule_processing(job["id"])
 
-    return {"jobs": created}
+    return {"jobs": created, "duplicates": duplicates, "skipped_duplicates": len(duplicates)}
 
 @app.get("/api/jobs")
 def list_jobs() -> dict[str, Any]:
@@ -211,6 +229,8 @@ async def retry_failed() -> dict[str, Any]:
                     "status_text": "Ожидает",
                     "student_number": None,
                     "progress": 0,
+                    "stage": "queued",
+                    "stage_text": "Ожидает обработки",
                     "message": "Файл поставлен на повторную обработку",
                     "finished_at": None,
                     "elapsed_sec": 0.0,
@@ -285,7 +305,7 @@ def get_artifact(job_id: str, artifact_name: str) -> Response:
 def download_results_csv() -> StreamingResponse:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["filename", "status", "student_number", "elapsed_sec", "message", "error_code"])
+    writer.writerow(["filename", "status", "student_number", "elapsed_sec", "stage", "message", "error_code"])
 
     for job in sorted(_jobs.values(), key=lambda item: item.get("created_at", "")):
         writer.writerow(
@@ -294,6 +314,7 @@ def download_results_csv() -> StreamingResponse:
                 job.get("status") or "",
                 job.get("student_number") or "",
                 f"{float(job.get('elapsed_sec') or 0):.3f}" if job.get("elapsed_sec") else "",
+                job.get("stage_text") or job.get("stage") or "",
                 job.get("message") or "",
                 job.get("error_code") or "",
             ]
@@ -363,6 +384,7 @@ def build_health(*, check_dependencies: bool) -> dict[str, Any]:
         "pipeline_require_gpu": PIPELINE_REQUIRE_GPU,
         "yolo_device": YOLO_DEVICE,
         "easyocr_gpu": EASYOCR_GPU,
+        "anchor_expand_ratio": ANCHOR_EXPAND_RATIO,
         "upload_limits": {
             "max_files": MAX_UPLOAD_FILES,
             "max_size_mb": MAX_UPLOAD_SIZE_MB,
@@ -494,8 +516,10 @@ async def process_job(job_id: str) -> None:
             job = require_job(job_id)
             job["status"] = "running"
             job["status_text"] = "Обработка"
-            job["message"] = "Файл обрабатывается"
+            job["message"] = "Подготовка файла"
             job["progress"] = 5
+            job["stage"] = "started"
+            job["stage_text"] = "Подготовка файла"
             job["attempt"] = int(job.get("attempt") or 0) + 1
             job["processor_mode"] = PROCESSOR_MODE
             job["error_code"] = None
@@ -525,6 +549,8 @@ async def process_job(job_id: str) -> None:
                 job["status_text"] = status_text
                 job["student_number"] = None
                 job["progress"] = 100
+                job["stage"] = "error"
+                job["stage_text"] = status_text
                 job["message"] = public_message
                 job["error_code"] = "WEB_PIPELINE_ERROR"
                 job["error_message"] = error_text
@@ -538,23 +564,22 @@ async def process_job(job_id: str) -> None:
 
 
 async def run_pipeline_processor(job_id: str, job_snapshot: dict[str, Any]) -> dict[str, Any]:
+    progress_path = JOBS_DIR / job_id / "progress.json"
+    progress_path.unlink(missing_ok=True)
+
     task = asyncio.create_task(asyncio.to_thread(run_pipeline_sync, job_snapshot))
-    progress_values = [12, 18, 24, 30, 36, 43, 50, 57, 64, 71, 78, 84, 89, 93, 96]
-    progress_index = 0
+    last_progress_mtime = 0.0
 
     while not task.done():
-        await asyncio.sleep(2.0)
-        async with _store_lock:
-            job = require_job(job_id)
-            if job.get("status") != "running":
-                continue
-            if progress_index < len(progress_values):
-                job["progress"] = progress_values[progress_index]
-                progress_index += 1
-            else:
-                job["progress"] = min(97, int(job.get("progress") or 96))
-            job["message"] = "Выполняется распознавание"
-            save_job(job)
+        await asyncio.sleep(PROGRESS_POLL_INTERVAL_SEC)
+        progress_payload = read_progress_payload(progress_path, last_progress_mtime)
+        if progress_payload is not None:
+            last_progress_mtime = progress_payload["mtime"]
+            async with _store_lock:
+                job = require_job(job_id)
+                if job.get("status") == "running":
+                    apply_progress_payload(job, progress_payload)
+                    save_job(job)
 
     return await task
 
@@ -584,14 +609,32 @@ def run_pipeline_sync(job: dict[str, Any]) -> dict[str, Any]:
         compute_device=os.getenv("PIPELINE_DEVICE", "auto"),
         yolo_device=None if os.getenv("YOLO_DEVICE", "auto").strip().lower() in {"", "auto", "default"} else os.getenv("YOLO_DEVICE"),
         easyocr_gpu=os.getenv("EASYOCR_GPU", "auto"),
+        anchor_expand_ratio=ANCHOR_EXPAND_RATIO,
     )
+
+    progress_path = job_dir / "progress.json"
+
+    def write_progress(stage: str, progress: int, message: str) -> None:
+        payload = {
+            "stage": stage,
+            "stage_text": message,
+            "progress": int(max(0, min(100, progress))),
+            "message": message,
+            "updated_at": now_iso(),
+        }
+        progress_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
     stdout_buffer = io.StringIO()
     stderr_buffer = io.StringIO()
 
     with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
         pipeline = DocumentPipeline(config)
-        pipeline_result = pipeline.process_image(str(input_path), str(output_dir), debug=PIPELINE_DEBUG)
+        pipeline_result = pipeline.process_image(
+            str(input_path),
+            str(output_dir),
+            debug=PIPELINE_DEBUG,
+            progress_callback=write_progress,
+        )
 
     stdout_text = stdout_buffer.getvalue()
     stderr_text = stderr_buffer.getvalue()
@@ -613,6 +656,9 @@ async def run_mock_processor(job_id: str, job_snapshot: dict[str, Any]) -> dict[
             if job["status"] != "running":
                 return {"kind": "mock", "cancelled": True}
             job["progress"] = progress
+            job["stage"] = "mock_processing"
+            job["stage_text"] = "Тестовая обработка"
+            job["message"] = "Тестовая обработка"
             save_job(job)
 
     await asyncio.sleep(0.35)
@@ -638,6 +684,8 @@ async def run_mock_processor(job_id: str, job_snapshot: dict[str, Any]) -> dict[
 
 def apply_processor_result(job: dict[str, Any], processor_result: dict[str, Any], elapsed: float) -> None:
     job["progress"] = 100
+    job["stage"] = "done"
+    job["stage_text"] = "Готово"
     job["elapsed_sec"] = round(elapsed, 3)
     job["finished_at"] = now_iso()
 
@@ -653,6 +701,8 @@ def apply_processor_result(job: dict[str, Any], processor_result: dict[str, Any]
             job["status"] = "ok"
             job["status_text"] = "Готово"
             job["student_number"] = number
+            job["stage"] = "done"
+            job["stage_text"] = "Готово"
             job["message"] = "Номер распознан. Результат готов к скачиванию."
             job["error_code"] = None
             job["error_message"] = None
@@ -663,6 +713,8 @@ def apply_processor_result(job: dict[str, Any], processor_result: dict[str, Any]
             job["status"] = "error"
             job["status_text"] = status_text
             job["student_number"] = None
+            job["stage"] = "error"
+            job["stage_text"] = status_text
             job["message"] = message
             job["error_code"] = error_code
             job["error_message"] = error_message
@@ -702,6 +754,8 @@ def apply_processor_result(job: dict[str, Any], processor_result: dict[str, Any]
         job["status"] = "ok"
         job["status_text"] = "Готово"
         job["student_number"] = number
+        job["stage"] = "done"
+        job["stage_text"] = "Готово"
         job["message"] = "Номер распознан. Результат готов к скачиванию."
         job["error_code"] = None
         job["error_message"] = None
@@ -712,6 +766,8 @@ def apply_processor_result(job: dict[str, Any], processor_result: dict[str, Any]
         job["status"] = "error"
         job["status_text"] = status_text
         job["student_number"] = None
+        job["stage"] = "error"
+        job["stage_text"] = status_text
         job["message"] = message
         job["error_code"] = error_code
         job["error_message"] = error_message
@@ -773,6 +829,8 @@ def public_job(job: dict[str, Any]) -> dict[str, Any]:
         "status_text": job.get("status_text"),
         "student_number": job.get("student_number"),
         "progress": job.get("progress") or 0,
+        "stage": job.get("stage") or "unknown",
+        "stage_text": job.get("stage_text") or job.get("status_text"),
         "message": job.get("message"),
         "created_at": job.get("created_at"),
         "finished_at": job.get("finished_at"),
@@ -826,6 +884,41 @@ def resolve_artifact_path(job: dict[str, Any], artifact_name: str) -> Path | Non
     return None
 
 
+def sha256_bytes(content: bytes) -> str:
+    return hashlib.sha256(content).hexdigest()
+
+
+def find_duplicate_job(file_sha256: str) -> dict[str, Any] | None:
+    for job in _jobs.values():
+        if job.get("file_sha256") == file_sha256:
+            return job
+    return None
+
+
+def read_progress_payload(progress_path: Path, last_mtime: float) -> dict[str, Any] | None:
+    try:
+        stat = progress_path.stat()
+        if stat.st_mtime <= last_mtime:
+            return None
+        payload = json.loads(progress_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        payload["mtime"] = stat.st_mtime
+        return payload
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def apply_progress_payload(job: dict[str, Any], payload: dict[str, Any]) -> None:
+    progress = int(payload.get("progress") or job.get("progress") or 0)
+    job["progress"] = max(int(job.get("progress") or 0), min(progress, 99))
+    job["stage"] = str(payload.get("stage") or job.get("stage") or "running")
+    job["stage_text"] = str(payload.get("stage_text") or payload.get("message") or job.get("stage_text") or "Обработка")
+    job["message"] = str(payload.get("message") or job.get("message") or job["stage_text"])
+
+
 def require_job(job_id: str) -> dict[str, Any]:
     job = _jobs.get(job_id)
     if not job:
@@ -848,6 +941,8 @@ def load_jobs_from_disk() -> None:
             status_text, public_message = friendly_error("JOB_INTERRUPTED", "Server was restarted while the job was active.")
             job["status_text"] = status_text
             job["progress"] = 100
+            job["stage"] = "error"
+            job["stage_text"] = status_text
             job["message"] = public_message
             job["error_code"] = "JOB_INTERRUPTED"
             job["error_message"] = "Server was restarted while the job was active."

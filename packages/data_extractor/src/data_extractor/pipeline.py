@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import traceback
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from data_extractor.config import PipelineConfig
 from data_extractor.errors import (
@@ -41,7 +41,13 @@ class DocumentPipeline:
         self.number_parser = StudentNumberParser(config)
         self.artifacts = ArtifactWriter(config)
 
-    def process_image(self, image_path: str | Path, output_dir: str | Path, debug: bool | None = None) -> PipelineResult:
+    def process_image(
+        self,
+        image_path: str | Path,
+        output_dir: str | Path,
+        debug: bool | None = None,
+        progress_callback: Callable[[str, int, str], None] | None = None,
+    ) -> PipelineResult:
         output_dir = self.artifacts.prepare_output_dir(output_dir)
         debug_enabled = self.config.save_debug if debug is None else debug
         timings: dict[str, float] = {}
@@ -58,10 +64,12 @@ class DocumentPipeline:
         yolo_debug_path: str | None = None
 
         try:
+            self._report_progress(progress_callback, "copy_source", 5, "Подготовка файла")
             if debug_enabled:
                 with timed(timings, "copy_source_ref"):
                     debug_data["source_ref_path"] = self.artifacts.copy_source_ref(image_path, output_dir)
 
+            self._report_progress(progress_callback, "load_image", 10, "Проверка изображения")
             with timed(timings, "load_image"):
                 image_data = self.image_loader.load(image_path)
             debug_data["stages"]["image_loader"] = {
@@ -69,28 +77,34 @@ class DocumentPipeline:
                 "height": image_data.height,
             }
 
+            self._report_progress(progress_callback, "face_detection", 20, "Поиск лица")
             with timed(timings, "face_detection"):
                 face_result = self.face_detector.detect(image_data.image_bgr)
             debug_data["stages"]["face_detection"] = face_result.to_debug_dict()
 
+            self._report_progress(progress_callback, "save_face", 30, "Сохранение лица")
             with timed(timings, "save_face"):
                 face_path = self.artifacts.save_face(face_result.face_image, output_dir)
                 if debug_enabled and face_result.debug_image is not None:
                     yolo_debug_path = self.artifacts.save_yolo_debug(face_result.debug_image, output_dir)
 
+            self._report_progress(progress_callback, "anchor_ocr", 40, "Поиск текста на документе")
             with timed(timings, "anchor_ocr"):
                 anchor_ocr_items = self.anchor_ocr.read(image_data.image_bgr)
             debug_data["stages"]["anchor_ocr"] = {
                 "items": [item.to_dict() for item in anchor_ocr_items],
             }
 
+            self._report_progress(progress_callback, "anchor_detection", 50, "Поиск области номера")
             with timed(timings, "anchor_detection"):
                 anchor_result = self.anchor_finder.find(image_data.image_bgr, anchor_ocr_items)
             debug_data["stages"]["anchor_detection"] = anchor_result.to_debug_dict()
 
+            self._report_progress(progress_callback, "save_anchor", 58, "Подготовка области номера")
             with timed(timings, "save_anchor"):
                 anchor_path = self.artifacts.save_anchor(anchor_result.anchor_image, output_dir)
 
+            self._report_progress(progress_callback, "ocr", 65, "Распознавание номера")
             with timed(timings, "ocr"):
                 ocr_result = self.ocr_reader.recognize(anchor_result.anchor_image, debug=debug_enabled)
             debug_data["stages"]["ocr"] = ocr_result.to_dict()
@@ -107,9 +121,12 @@ class DocumentPipeline:
                     anchor_path=anchor_path,
                     yolo_debug_path=yolo_debug_path,
                 )
+                self._report_progress(progress_callback, "save_result", 95, "Сохранение результата")
                 self._save_final_artifacts(result, output_dir, debug_data)
+                self._report_progress(progress_callback, "done", 100, "Готово")
                 return result
 
+            self._report_progress(progress_callback, "number_parse", 88, "Проверка номера")
             with timed(timings, "number_parse"):
                 number_result = self.number_parser.parse_ocr(ocr_result)
             debug_data["stages"]["number_parse"] = number_result.to_dict()
@@ -133,7 +150,9 @@ class DocumentPipeline:
                 result.raw_faculty = ocr_result.raw_faculty
                 result.parser_note = number_result.note
                 result.recognition_status = number_result.recognition_status
+                self._report_progress(progress_callback, "save_result", 95, "Сохранение результата")
                 self._save_final_artifacts(result, output_dir, debug_data)
+                self._report_progress(progress_callback, "done", 100, "Готово")
                 return result
 
             recognized_anchor_path = self.artifacts.save_recognized_anchor(
@@ -167,7 +186,9 @@ class DocumentPipeline:
                 timings=timings,
                 debug=debug_data,
             )
+            self._report_progress(progress_callback, "save_result", 95, "Сохранение результата")
             self._save_final_artifacts(result, output_dir, debug_data)
+            self._report_progress(progress_callback, "done", 100, "Готово")
             return result
 
         except PipelineStageError as exc:
@@ -189,6 +210,7 @@ class DocumentPipeline:
                 recognized_anchor_path=recognized_anchor_path,
                 yolo_debug_path=yolo_debug_path,
             )
+            self._report_progress(progress_callback, "error", 100, "Ошибка обработки")
             self._save_final_artifacts_safely(result, output_dir, debug_data)
             return result
         except Exception as exc:
@@ -209,11 +231,27 @@ class DocumentPipeline:
                 recognized_anchor_path=recognized_anchor_path,
                 yolo_debug_path=yolo_debug_path,
             )
+            self._report_progress(progress_callback, "error", 100, "Ошибка обработки")
             self._save_final_artifacts_safely(result, output_dir, debug_data)
             return result
         finally:
             if timings:
                 timings["total_recorded"] = round(sum(timings.values()), 4)
+
+    @staticmethod
+    def _report_progress(
+        progress_callback: Callable[[str, int, str], None] | None,
+        stage: str,
+        progress: int,
+        message: str,
+    ) -> None:
+        if progress_callback is None:
+            return
+        try:
+            progress_callback(stage, progress, message)
+        except Exception:
+            # Progress reporting must never break image processing.
+            pass
 
     def process_image_dict(self, image_path: str | Path, output_dir: str | Path, debug: bool | None = None) -> dict[str, Any]:
         return self.process_image(image_path, output_dir, debug=debug).to_dict()

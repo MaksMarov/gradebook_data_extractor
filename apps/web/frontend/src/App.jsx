@@ -43,6 +43,7 @@ export function App() {
   const [selectedJobId, setSelectedJobId] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
   const [lastError, setLastError] = useState("");
+  const [lastNotice, setLastNotice] = useState("");
   const pollingRef = useRef(null);
 
   const selectedJob = useMemo(() => {
@@ -99,11 +100,19 @@ export function App() {
     setLastError("");
 
     try {
-      const created = await createJobs(files);
+      const result = await createJobs(files);
       await loadJobs();
 
-      if (created[0]?.id) {
-        setSelectedJobId(created[0].id);
+      const firstJob = result.jobs[0] || result.duplicates[0];
+      if (firstJob?.id) {
+        setSelectedJobId(firstJob.id);
+      }
+
+      if (result.skippedDuplicates > 0) {
+        const suffix = result.skippedDuplicates === 1 ? "файл уже был добавлен" : "файла уже были добавлены";
+        setLastNotice(`${result.skippedDuplicates} ${suffix}. Дубликаты не загружены повторно.`);
+      } else {
+        setLastNotice("");
       }
     } catch (error) {
       setLastError(error.message || "Не удалось загрузить файлы");
@@ -114,6 +123,7 @@ export function App() {
 
   async function handleRetryFailed() {
     setLastError("");
+    setLastNotice("");
 
     try {
       await retryFailedJobs();
@@ -129,6 +139,7 @@ export function App() {
 
       <main className="main">
         {lastError ? <div className="notice notice--error">{lastError}</div> : null}
+        {lastNotice ? <div className="notice notice--info">{lastNotice}</div> : null}
 
         {route.name === "upload" ? (
           <UploadPage
@@ -331,7 +342,7 @@ function CurrentResult({ job }) {
   return (
     <section className="current-result">
       <div>
-        <span className="muted">Текущий результат</span>
+        <span className="muted">{job.stageText || "Текущий результат"}</span>
         <h2>{job.filename}</h2>
       </div>
       <div className="current-result__number">{job.number || "Не распознано"}</div>
@@ -374,7 +385,7 @@ function FileCard({ job, selected, onSelect }) {
             <div className="file-title" title={job.filename}>
               {job.filename}
             </div>
-            <div className="file-meta">{job.message || "Файл добавлен"}</div>
+            <div className="file-meta">{job.stageText || job.message || "Файл добавлен"}</div>
           </div>
           <StatusBadge job={job} />
         </div>
@@ -516,7 +527,7 @@ function DetailsPage({ jobId, jobs, onJobLoaded }) {
           <div>
             <p className="eyebrow">Детали обработки</p>
             <h1>{job.filename}</h1>
-            <p className="detail-meta">{job.message || "—"}</p>
+            <p className="detail-meta">{job.stageText || job.message || "—"}</p>
             <div className="details-number">{job.number || (isError(job) ? "Не распознано" : "—")}</div>
           </div>
           <StatusBadge job={job} />
