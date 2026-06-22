@@ -51,7 +51,7 @@ services:
       context: .
       dockerfile: docker/backend.gpu.Dockerfile
       args:
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}
     container_name: gradebook-backend
     restart: unless-stopped
     depends_on:
@@ -70,6 +70,7 @@ services:
       PIPELINE_DEVICE: ${PIPELINE_DEVICE:-cuda}
       PIPELINE_REQUIRE_GPU: ${PIPELINE_REQUIRE_GPU:-1}
       YOLO_DEVICE: ${YOLO_DEVICE:-0}
+      YOLO_CPU_FALLBACK: ${YOLO_CPU_FALLBACK:-1}
       EASYOCR_GPU: ${EASYOCR_GPU:-1}
       YOLO_MODEL_PATH: ${YOLO_MODEL_PATH:-models/yolo26n.pt}
       OCR_MODE: ${OCR_MODE:-qwen}

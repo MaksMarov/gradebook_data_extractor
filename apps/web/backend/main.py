@@ -39,6 +39,7 @@ ALLOWED_IMAGE_EXTENSIONS = {
 PIPELINE_DEVICE = os.getenv("PIPELINE_DEVICE", "auto").strip().lower()
 PIPELINE_REQUIRE_GPU = os.getenv("PIPELINE_REQUIRE_GPU", "0").strip().lower() in {"1", "true", "yes", "on"}
 YOLO_DEVICE = os.getenv("YOLO_DEVICE", "auto").strip()
+YOLO_CPU_FALLBACK = os.getenv("YOLO_CPU_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
 EASYOCR_GPU = os.getenv("EASYOCR_GPU", "auto").strip()
 ANCHOR_EXPAND_RATIO = float(os.getenv("ANCHOR_EXPAND_RATIO", "3.6"))
 PROGRESS_POLL_INTERVAL_SEC = float(os.getenv("WEB_PROGRESS_POLL_INTERVAL_SEC", "0.5"))
@@ -383,6 +384,7 @@ def build_health(*, check_dependencies: bool) -> dict[str, Any]:
         "pipeline_device": PIPELINE_DEVICE,
         "pipeline_require_gpu": PIPELINE_REQUIRE_GPU,
         "yolo_device": YOLO_DEVICE,
+        "yolo_cpu_fallback": YOLO_CPU_FALLBACK,
         "easyocr_gpu": EASYOCR_GPU,
         "anchor_expand_ratio": ANCHOR_EXPAND_RATIO,
         "upload_limits": {
@@ -441,6 +443,7 @@ def check_backend_gpu() -> dict[str, Any]:
         "required": requires_gpu,
         "pipeline_device": PIPELINE_DEVICE,
         "yolo_device": YOLO_DEVICE,
+        "yolo_cpu_fallback": YOLO_CPU_FALLBACK,
         "easyocr_gpu": EASYOCR_GPU,
         **info,
     }
@@ -608,6 +611,7 @@ def run_pipeline_sync(job: dict[str, Any]) -> dict[str, Any]:
         mock_ocr_text=os.getenv("MOCK_OCR_TEXT", "№ 22-ЭТФ-062"),
         compute_device=os.getenv("PIPELINE_DEVICE", "auto"),
         yolo_device=None if os.getenv("YOLO_DEVICE", "auto").strip().lower() in {"", "auto", "default"} else os.getenv("YOLO_DEVICE"),
+        yolo_cpu_fallback_enabled=YOLO_CPU_FALLBACK,
         easyocr_gpu=os.getenv("EASYOCR_GPU", "auto"),
         anchor_expand_ratio=ANCHOR_EXPAND_RATIO,
     )

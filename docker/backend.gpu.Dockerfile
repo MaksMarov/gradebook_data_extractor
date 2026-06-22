@@ -8,7 +8,7 @@ ENV PIP_NO_CACHE_DIR=0
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
 
 WORKDIR /app
 
@@ -26,7 +26,7 @@ COPY requirements-backend.txt ./requirements-backend.txt
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install --index-url "${TORCH_INDEX_URL}" torch torchvision \
+    && python -m pip install --index-url "${TORCH_INDEX_URL}" "torch>=2.7.0" "torchvision>=0.22.0" \
     && python -m pip install -r requirements-backend.txt
 
 COPY packages ./packages

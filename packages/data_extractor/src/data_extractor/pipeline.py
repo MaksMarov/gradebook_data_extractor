@@ -288,6 +288,7 @@ class DocumentPipeline:
             "allowed_years": list(self.config.allowed_years),
             "compute_device": self.config.compute_device,
             "yolo_device": resolve_yolo_device(self.config.compute_device, self.config.yolo_device),
+            "yolo_cpu_fallback_enabled": self.config.yolo_cpu_fallback_enabled,
             "easyocr_gpu": resolve_easyocr_gpu(self.config.compute_device, self.config.easyocr_gpu),
             "torch_cuda": torch_cuda_info().to_dict(),
             "anchor_expand_ratio": self.config.anchor_expand_ratio,
@@ -321,6 +322,7 @@ class StudDocPipeline:
         ocr_mode: str = "qwen",
         compute_device: str = "auto",
         yolo_device: str | None = None,
+        yolo_cpu_fallback_enabled: bool = True,
         easyocr_gpu: bool | str = "auto",
     ):
         config = PipelineConfig(
@@ -337,6 +339,7 @@ class StudDocPipeline:
             ocr_mode=ocr_mode,  # type: ignore[arg-type]
             compute_device=compute_device,
             yolo_device=yolo_device,
+            yolo_cpu_fallback_enabled=yolo_cpu_fallback_enabled,
             easyocr_gpu=easyocr_gpu,
         )
         self._pipeline = DocumentPipeline(config)

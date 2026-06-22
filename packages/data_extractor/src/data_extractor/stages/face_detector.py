@@ -38,23 +38,56 @@ class FaceDetector:
                 ) from exc
         return self._model
 
-    def detect(self, image_bgr: np.ndarray) -> FaceDetectionResult:
+    def _predict(self, image_bgr: np.ndarray, device: str | None) -> Any:
+        predict_kwargs: dict[str, Any] = {
+            "conf": self.config.yolo_conf_threshold,
+            "verbose": False,
+        }
+        if device is not None:
+            predict_kwargs["device"] = device
+        return self.model.predict(image_bgr, **predict_kwargs)
+
+    def _predict_with_optional_cpu_fallback(self, image_bgr: np.ndarray) -> tuple[Any, str, str]:
+        primary_device = self._device
         try:
-            predict_kwargs: dict[str, Any] = {
-                "conf": self.config.yolo_conf_threshold,
-                "verbose": False,
-            }
-            if self._device is not None:
-                predict_kwargs["device"] = self._device
-            results = self.model.predict(image_bgr, **predict_kwargs)
+            return self._predict(image_bgr, primary_device), str(primary_device or "auto"), ""
         except PipelineStageError:
             raise
-        except Exception as exc:
-            raise PipelineStageError(
-                FACE_DETECTION_ERROR,
-                "YOLO inference failed",
-                {"error": str(exc), "device": self._device},
-            ) from exc
+        except Exception as primary_exc:
+            can_fallback = (
+                self.config.yolo_cpu_fallback_enabled
+                and primary_device is not None
+                and str(primary_device).strip().lower() != "cpu"
+            )
+            if not can_fallback:
+                raise PipelineStageError(
+                    FACE_DETECTION_ERROR,
+                    "YOLO inference failed",
+                    {"error": str(primary_exc), "device": primary_device},
+                ) from primary_exc
+
+            try:
+                results = self._predict(image_bgr, "cpu")
+            except Exception as fallback_exc:
+                raise PipelineStageError(
+                    FACE_DETECTION_ERROR,
+                    "YOLO inference failed",
+                    {
+                        "error": str(primary_exc),
+                        "device": primary_device,
+                        "fallback_device": "cpu",
+                        "fallback_error": str(fallback_exc),
+                    },
+                ) from fallback_exc
+
+            return (
+                results,
+                "cpu",
+                f"YOLO inference failed on device {primary_device}; retried on CPU.",
+            )
+
+    def detect(self, image_bgr: np.ndarray) -> FaceDetectionResult:
+        results, used_device, fallback_reason = self._predict_with_optional_cpu_fallback(image_bgr)
 
         best_crop = None
         best_bbox: tuple[int, int, int, int] | None = None
@@ -96,4 +129,6 @@ class FaceDetector:
             label=best_label,
             face_image=best_crop,
             debug_image=draw_bbox(image_bgr, best_bbox, f"{best_label} {best_conf:.2f}"),
+            device=used_device,
+            fallback_reason=fallback_reason,
         )

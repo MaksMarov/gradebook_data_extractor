@@ -133,3 +133,8 @@ docker compose exec -T backend python -c "import torch; print(torch.cuda.is_avai
 ```bash
 bash scripts/cleanup_jobs.sh
 ```
+
+
+## GPU troubleshooting
+
+For RTX 50-series / Blackwell GPUs the backend image uses PyTorch with CUDA 12.8 wheels. Keep `TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128` in `.env`. If YOLO GPU inference fails, the pipeline retries YOLO on CPU when `YOLO_CPU_FALLBACK=1`; Qwen/Ollama still uses GPU.

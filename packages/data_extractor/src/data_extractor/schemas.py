@@ -23,6 +23,8 @@ class FaceDetectionResult:
     face_image: Any = None
     debug_image: Any = None
     error: str = ""
+    device: str = ""
+    fallback_reason: str = ""
 
     def to_debug_dict(self) -> dict[str, Any]:
         return to_jsonable({
@@ -31,6 +33,8 @@ class FaceDetectionResult:
             "confidence": self.confidence,
             "label": self.label,
             "error": self.error,
+            "device": self.device,
+            "fallback_reason": self.fallback_reason,
         })
 
 

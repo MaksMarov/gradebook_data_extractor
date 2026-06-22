@@ -43,6 +43,9 @@ class PipelineConfig:
     # cuda - force GPU and fail fast if CUDA is not available
     compute_device: str = "auto"
     yolo_device: str | None = None
+    # When GPU inference fails (for example unsupported CUDA kernels on new GPUs),
+    # retry YOLO on CPU instead of failing the whole pipeline.
+    yolo_cpu_fallback_enabled: bool = True
     easyocr_gpu: bool | str = "auto"
 
     yolo_conf_threshold: float = 0.4
